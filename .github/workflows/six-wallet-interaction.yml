@@ -1,0 +1,223 @@
+name: Run six-wallet PocketDAO interaction
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type INTERACT_MAINNET to authorize real BOT Chain transactions
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pocketdao-six-wallet-mainnet
+  cancel-in-progress: false
+
+jobs:
+  interact:
+    runs-on: ubuntu-latest
+    environment: mainnet
+    env:
+      RPC_URL: https://rpc.botchain.ai
+      EXPLORER_URL: https://scan.botchain.ai
+      FACTORY_ADDRESS: 0xd7b385be0e22b41b6a838ec59b14caa95c44bb74
+      PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+    steps:
+      - name: Confirm mainnet interaction
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${{ inputs.confirmation }}" == "INTERACT_MAINNET" ]] || {
+            echo "Confirmation did not match INTERACT_MAINNET. No transaction was sent."
+            exit 1
+          }
+          [[ "$PRIVATE_KEY" =~ ^0x[0-9a-fA-F]{64}$ ]] || {
+            echo "PRIVATE_KEY must be 0x followed by 64 hexadecimal characters."
+            exit 1
+          }
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Run six real wallet interactions
+        id: interact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EXPECTED_CHAIN_ID=677
+          VOTING_PERIOD=3600
+          DAO_NAME="P6"
+
+          chain_id=$(cast chain-id --rpc-url "$RPC_URL")
+          [[ "$chain_id" == "$EXPECTED_CHAIN_ID" ]] || {
+            echo "Expected BOT Chain Mainnet (677), but the RPC returned chain $chain_id."
+            exit 1
+          }
+
+          contract_code=$(cast code "$FACTORY_ADDRESS" --rpc-url "$RPC_URL")
+          [[ "$contract_code" != "0x" ]] || {
+            echo "No contract was found at $FACTORY_ADDRESS. No transaction was sent."
+            exit 1
+          }
+
+          factory_count=$(cast call "$FACTORY_ADDRESS" "daoCount()(uint256)" --rpc-url "$RPC_URL")
+          [[ -n "$factory_count" ]] || {
+            echo "The supplied address did not respond as a PocketDAO factory."
+            exit 1
+          }
+
+          echo "::add-mask::$PRIVATE_KEY"
+          funder=$(cast wallet address --private-key "$PRIVATE_KEY")
+          gas_price=$(cast gas-price --rpc-url "$RPC_URL")
+          echo "Funder: $funder"
+          echo "Gas price: $gas_price wei"
+
+          declare -a wallet_keys
+          declare -a wallet_addresses
+          declare -a funding_hashes
+          declare -a interaction_hashes
+
+          for index in 0 1 2 3 4 5; do
+            while true; do
+              candidate="0x$(openssl rand -hex 32)"
+              if address=$(cast wallet address --private-key "$candidate" 2>/dev/null); then
+                break
+              fi
+            done
+            echo "::add-mask::$candidate"
+            wallet_keys[$index]="$candidate"
+            wallet_addresses[$index]="$address"
+            echo "Wallet $((index + 1)): $address"
+          done
+
+          transaction_hash() {
+            local output="$1"
+            local hash
+            hash=$(jq -r '.transactionHash // .hash // empty' <<< "$output")
+            [[ "$hash" =~ ^0x[0-9a-fA-F]{64}$ ]] || {
+              echo "A transaction was submitted but its hash could not be read." >&2
+              exit 1
+            }
+            printf '%s' "$hash"
+          }
+
+          estimate_gas() {
+            local from="$1"
+            local to="$2"
+            local data="$3"
+            local request estimate_hex
+            request=$(jq -cn --arg from "$from" --arg to "$to" --arg data "$data" \
+              '{from: $from, to: $to, data: $data}')
+            estimate_hex=$(cast rpc --rpc-url "$RPC_URL" eth_estimateGas "$request" | tr -d '"[:space:]')
+            [[ "$estimate_hex" =~ ^0x[0-9a-fA-F]+$ ]] || {
+              echo "Gas estimation failed before funding a temporary wallet." >&2
+              exit 1
+            }
+            printf '%d' "$((estimate_hex))"
+          }
+
+          fund_wallet() {
+            local index="$1"
+            local estimated_gas="$2"
+            local label="$3"
+            local gas_limit funding_amount output
+            gas_limit=$(( (estimated_gas * 110 + 99) / 100 ))
+            funding_amount=$(( gas_limit * gas_price ))
+            output=$(cast send "${wallet_addresses[$index]}" \
+              --value "$funding_amount" \
+              --private-key "$PRIVATE_KEY" \
+              --rpc-url "$RPC_URL" \
+              --gas-price "$gas_price" \
+              --json)
+            funding_hashes[$index]=$(transaction_hash "$output")
+            echo "$label gas estimate: $estimated_gas"
+            echo "$label gas funding: $funding_amount wei"
+          }
+
+          members="${wallet_addresses[1]},${wallet_addresses[2]},${wallet_addresses[3]},${wallet_addresses[4]},${wallet_addresses[5]}"
+          create_data=$(cast calldata "createDAO(string,address[],uint64)" "$DAO_NAME" "[$members]" "$VOTING_PERIOD")
+          create_gas=$(estimate_gas "${wallet_addresses[0]}" "$FACTORY_ADDRESS" "$create_data")
+          fund_wallet 0 "$create_gas" "Create DAO"
+          create_limit=$(( (create_gas * 110 + 99) / 100 ))
+          create_output=$(cast send "$FACTORY_ADDRESS" \
+            "createDAO(string,address[],uint64)(address)" \
+            "$DAO_NAME" "[$members]" "$VOTING_PERIOD" \
+            --private-key "${wallet_keys[0]}" \
+            --rpc-url "$RPC_URL" \
+            --gas-price "$gas_price" \
+            --gas-limit "$create_limit" \
+            --json)
+          interaction_hashes[0]=$(transaction_hash "$create_output")
+
+          dao_result=$(cast call "$FACTORY_ADDRESS" \
+            "getDAOsByCreator(address)(address[])" \
+            "${wallet_addresses[0]}" \
+            --rpc-url "$RPC_URL")
+          dao_address=$(grep -oE '0x[0-9a-fA-F]{40}' <<< "$dao_result" | head -n 1)
+          [[ "$dao_address" =~ ^0x[0-9a-fA-F]{40}$ ]] || {
+            echo "The DAO was created, but its address could not be read from the factory." >&2
+            exit 1
+          }
+          echo "PocketDAO: $dao_address"
+
+          proposal_data=$(cast calldata "createProposal(address,uint256,string)" "${wallet_addresses[5]}" 1 "")
+          proposal_gas=$(estimate_gas "${wallet_addresses[1]}" "$dao_address" "$proposal_data")
+          fund_wallet 1 "$proposal_gas" "Create proposal"
+          proposal_limit=$(( (proposal_gas * 110 + 99) / 100 ))
+          proposal_output=$(cast send "$dao_address" \
+            "createProposal(address,uint256,string)(uint256)" \
+            "${wallet_addresses[5]}" 1 "" \
+            --private-key "${wallet_keys[1]}" \
+            --rpc-url "$RPC_URL" \
+            --gas-price "$gas_price" \
+            --gas-limit "$proposal_limit" \
+            --json)
+          interaction_hashes[1]=$(transaction_hash "$proposal_output")
+
+          vote_data=$(cast calldata "vote(uint256,bool)" 0 true)
+          for index in 2 3 4 5; do
+            vote_gas=$(estimate_gas "${wallet_addresses[$index]}" "$dao_address" "$vote_data")
+            fund_wallet "$index" "$vote_gas" "Wallet $((index + 1)) vote"
+            vote_limit=$(( (vote_gas * 110 + 99) / 100 ))
+            vote_output=$(cast send "$dao_address" \
+              "vote(uint256,bool)" 0 true \
+              --private-key "${wallet_keys[$index]}" \
+              --rpc-url "$RPC_URL" \
+              --gas-price "$gas_price" \
+              --gas-limit "$vote_limit" \
+              --json)
+            interaction_hashes[$index]=$(transaction_hash "$vote_output")
+          done
+
+          member_count=$(cast call "$dao_address" "memberCount()(uint256)" --rpc-url "$RPC_URL")
+          proposal=$(cast call "$dao_address" \
+            "getProposal(uint256)((address,uint256,uint64,uint32,uint32,uint256,bool,string))" \
+            0 --rpc-url "$RPC_URL")
+
+          [[ "$member_count" == "6" ]] || {
+            echo "Expected 6 DAO members, but found $member_count." >&2
+            exit 1
+          }
+
+          {
+            echo "### Six-wallet PocketDAO interaction complete"
+            echo
+            echo "- Factory: [$FACTORY_ADDRESS]($EXPLORER_URL/address/$FACTORY_ADDRESS)"
+            echo "- DAO: [$dao_address]($EXPLORER_URL/address/$dao_address)"
+            echo "- Members: $member_count"
+            echo "- Proposal: \`$proposal\`"
+            echo
+            echo "| Wallet | Address | Interaction transaction | Funding transaction |"
+            echo "| --- | --- | --- | --- |"
+            for index in 0 1 2 3 4 5; do
+              echo "| $((index + 1)) | \`${wallet_addresses[$index]}\` | [view]($EXPLORER_URL/tx/${interaction_hashes[$index]}) | [view]($EXPLORER_URL/tx/${funding_hashes[$index]}) |"
+            done
+            echo
+            echo "Temporary private keys were masked and were not saved as artifacts."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          unset wallet_keys candidate PRIVATE_KEY
