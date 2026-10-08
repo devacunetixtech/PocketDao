@@ -80,6 +80,8 @@ jobs:
           declare -a wallet_addresses
           declare -a funding_hashes
           declare -a interaction_hashes
+          declare -a factory_hashes
+          declare -a factory_gas_limits
 
           for index in 0 1 2 3 4 5; do
             while true; do
@@ -124,9 +126,10 @@ jobs:
             local index="$1"
             local estimated_gas="$2"
             local label="$3"
-            local gas_limit funding_amount output
+            local gas_limit factory_limit funding_amount output
             gas_limit=$(( (estimated_gas * 110 + 99) / 100 ))
-            funding_amount=$(( gas_limit * gas_price ))
+            factory_limit="${factory_gas_limits[$index]}"
+            funding_amount=$(( (gas_limit + factory_limit) * gas_price ))
             output=$(cast send "${wallet_addresses[$index]}" \
               --value "$funding_amount" \
               --private-key "$PRIVATE_KEY" \
@@ -135,7 +138,27 @@ jobs:
               --json)
             funding_hashes[$index]=$(transaction_hash "$output")
             echo "$label gas estimate: $estimated_gas"
+            echo "Factory interaction gas limit: $factory_limit"
             echo "$label gas funding: $funding_amount wei"
+          }
+
+          factory_data=$(cast calldata "daoCount()")
+          for index in 0 1 2 3 4 5; do
+            factory_gas=$(estimate_gas "${wallet_addresses[$index]}" "$FACTORY_ADDRESS" "$factory_data")
+            factory_gas_limits[$index]=$(( (factory_gas * 110 + 99) / 100 ))
+          done
+
+          interact_with_factory() {
+            local index="$1"
+            local output
+            output=$(cast send "$FACTORY_ADDRESS" \
+              "daoCount()" \
+              --private-key "${wallet_keys[$index]}" \
+              --rpc-url "$RPC_URL" \
+              --gas-price "$gas_price" \
+              --gas-limit "${factory_gas_limits[$index]}" \
+              --json)
+            factory_hashes[$index]=$(transaction_hash "$output")
           }
 
           members="${wallet_addresses[1]},${wallet_addresses[2]},${wallet_addresses[3]},${wallet_addresses[4]},${wallet_addresses[5]}"
@@ -193,6 +216,10 @@ jobs:
             interaction_hashes[$index]=$(transaction_hash "$vote_output")
           done
 
+          for index in 0 1 2 3 4 5; do
+            interact_with_factory "$index"
+          done
+
           member_count=$(cast call "$dao_address" "memberCount()(uint256)" --rpc-url "$RPC_URL")
           proposal=$(cast call "$dao_address" \
             "getProposal(uint256)((address,uint256,uint64,uint32,uint32,uint256,bool,string))" \
@@ -211,10 +238,10 @@ jobs:
             echo "- Members: $member_count"
             echo "- Proposal: \`$proposal\`"
             echo
-            echo "| Wallet | Address | Interaction transaction | Funding transaction |"
-            echo "| --- | --- | --- | --- |"
+            echo "| Wallet | Address | Factory transaction | Primary transaction | Funding transaction |"
+            echo "| --- | --- | --- | --- | --- |"
             for index in 0 1 2 3 4 5; do
-              echo "| $((index + 1)) | \`${wallet_addresses[$index]}\` | [view]($EXPLORER_URL/tx/${interaction_hashes[$index]}) | [view]($EXPLORER_URL/tx/${funding_hashes[$index]}) |"
+              echo "| $((index + 1)) | \`${wallet_addresses[$index]}\` | [view]($EXPLORER_URL/tx/${factory_hashes[$index]}) | [view]($EXPLORER_URL/tx/${interaction_hashes[$index]}) | [view]($EXPLORER_URL/tx/${funding_hashes[$index]}) |"
             done
             echo
             echo "Temporary private keys were masked and were not saved as artifacts."
