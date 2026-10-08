@@ -34,6 +34,25 @@ contract PocketDAOTest is Test {
         assertEq(dao.approvalThreshold(), 2);
     }
 
+    function testCreatesAndFundsSixMemberDAOInOneTransaction() public {
+        address[] memory members = new address[](5);
+        for (uint256 i; i < members.length; ++i) {
+            members[i] = makeAddr(string.concat("member-", vm.toString(i)));
+        }
+
+        vm.deal(alice, 1 ether);
+        vm.prank(alice);
+        PocketDAO sixMemberDao = PocketDAO(payable(factory.createDAO{value: 0.1 ether}(
+            "Six Wallet Treasury",
+            members,
+            1 days
+        )));
+
+        assertEq(sixMemberDao.memberCount(), 6);
+        assertEq(sixMemberDao.approvalThreshold(), 4);
+        assertEq(sixMemberDao.treasuryBalance(), 0.1 ether);
+    }
+
     function testDepositVoteAndExecuteProposal() public {
         vm.prank(alice);
         dao.deposit{value: 5 ether}();

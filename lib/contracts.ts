@@ -1,14 +1,14 @@
-import type { Address } from "viem";
+import { isAddress, type Address } from "viem";
+import { mainnetFactoryAddress } from "./deployments";
 
-const optionalAddress = (value?: string) => value as Address | undefined;
+const optionalAddress = (value?: string) => value && isAddress(value) ? value : undefined;
 
 export const factoryAddresses: Partial<Record<number, Address>> = {
-  968: optionalAddress(process.env.NEXT_PUBLIC_FACTORY_TESTNET_ADDRESS),
-  677: optionalAddress(process.env.NEXT_PUBLIC_FACTORY_MAINNET_ADDRESS),
+  677: optionalAddress(process.env.NEXT_PUBLIC_FACTORY_MAINNET_ADDRESS) ?? mainnetFactoryAddress,
 };
 
 export const getFactoryAddress = (chainId: number) => factoryAddresses[chainId];
-export const defaultDaoAddress = (process.env.NEXT_PUBLIC_DEFAULT_DAO_ADDRESS || "") as Address;
+export const defaultDaoAddress = optionalAddress(process.env.NEXT_PUBLIC_DEFAULT_DAO_MAINNET_ADDRESS);
 
 export const factoryAbi = [
   { type: "function", name: "createDAO", stateMutability: "payable", inputs: [{ name: "name", type: "string" }, { name: "initialMembers", type: "address[]" }, { name: "votingPeriod", type: "uint64" }], outputs: [{ name: "dao", type: "address" }] },

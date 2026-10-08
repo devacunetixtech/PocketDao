@@ -8,7 +8,7 @@ PocketDAO is a lightweight community treasury on BOT Chain. A group creates its 
 
 - Responsive Next.js 16 + TypeScript dashboard
 - Reconnect-safe injected wallet connection (no automatic redirect after connecting)
-- BOT Chain Testnet (968) and Mainnet (677) configuration
+- BOT Chain Mainnet (677) configuration
 - `PocketDAOFactory` for creating discoverable group treasuries
 - `PocketDAO` treasury with members, deposits, proposals, votes, execution, balance, and history
 - Fixed 1–30 day voting periods chosen at DAO creation
@@ -60,19 +60,6 @@ source .env
 
 Never commit `.env` or a private key. The repository ignores all local environment and Foundry deployment output files.
 
-### Deploy and verify on BOT Chain Testnet
-
-```bash
-forge script script/DeployBotchain.s.sol:DeployBotchain \
-  --rpc-url "$BOTCHAIN_TESTNET_RPC_URL" \
-  --broadcast \
-  --verify \
-  --verifier blockscout \
-  --verifier-url "$BOTCHAIN_TESTNET_VERIFIER_URL" \
-  --etherscan-api-key "$BLOCKSCOUT_API_KEY" \
-  --slow
-```
-
 ### Deploy and verify on BOT Chain Mainnet
 
 ```bash
@@ -86,14 +73,13 @@ forge script script/DeployBotchain.s.sol:DeployBotchain \
   --slow
 ```
 
-After deployment, set the printed factory address for the matching network:
+After deployment, set the printed factory address when deploying locally:
 
 ```env
-NEXT_PUBLIC_FACTORY_TESTNET_ADDRESS=0xYourTestnetFactoryAddress
 NEXT_PUBLIC_FACTORY_MAINNET_ADDRESS=0xYourMainnetFactoryAddress
 ```
 
-Optionally set `NEXT_PUBLIC_DEFAULT_DAO_ADDRESS` to open a specific treasury by default.
+Optionally set `NEXT_PUBLIC_DEFAULT_DAO_MAINNET_ADDRESS` to open a specific treasury by default. GitHub Actions writes a successful verified mainnet factory deployment to `lib/deployments.ts`, so the live frontend no longer depends on an old testnet address or a manual environment update.
 
 ## Governance rules
 
@@ -107,12 +93,24 @@ Optionally set `NEXT_PUBLIC_DEFAULT_DAO_ADDRESS` to open a specific treasury by 
 
 ## GitHub Actions deployment
 
-The manual **Deploy PocketDAO contracts** workflow supports BOT Chain Testnet and Mainnet. Before running it, create these repository secrets:
+The manual **Deploy PocketDAO contracts** workflow deploys only to BOT Chain Mainnet. Before running it, create these repository secrets in the `mainnet` environment or as repository secrets:
 
 - `PRIVATE_KEY` — funded deployment wallet private key
 - `BLOCKSCOUT_API_KEY` — Blockscout verification API key
 
-Then open **Actions → Deploy PocketDAO contracts → Run workflow** and select the target network. The workflow validates both secrets, runs all Foundry tests, deploys the factory, and verifies it on the matching BOT Chain explorer.
+Then open **Actions → Deploy PocketDAO contracts → Run workflow**. The workflow validates both secrets, runs all Foundry tests, deploys and verifies the factory, and commits the verified factory address to the frontend configuration.
+
+## Six-wallet gas-efficient launch
+
+Use six wallet accounts you control. Never share their private keys. The lowest-transaction setup is:
+
+1. Connect wallet 1 and create the DAO with wallets 2–6 pasted as the five initial members.
+2. Add the initial BOT deposit in the same creation form, avoiding a separate deposit transaction.
+3. Have one member create a proposal.
+4. For six members, four YES votes reach the fixed simple-majority threshold. Only wallets that vote need a small BOT gas balance.
+5. After the voting period, any funded wallet can execute the approved proposal.
+
+The deployer can also be wallet 1. The other five public addresses must come from wallets controlled by their owners; do not use addresses whose private keys were generated or shared by a third party.
 
 ## Verification
 
@@ -128,7 +126,6 @@ The Solidity sources can also be compiled directly with solc 0.8.24; the full te
 
 | Network | Chain ID | RPC | Explorer |
 | --- | ---: | --- | --- |
-| Testnet | 968 | `https://rpc.bohr.life` | `https://scan.bohr.life` |
 | Mainnet | 677 | `https://rpc.botchain.ai` | `https://scan.botchain.ai` |
 
 Native currency: BOT.

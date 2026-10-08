@@ -9,7 +9,7 @@ import { ConnectButton } from "./ConnectButton";
 import { Modal } from "./Modal";
 import { Toast } from "./Toast";
 import { TransactionButton } from "./TransactionButton";
-import { botchainMainnet, botchainTestnet } from "@/lib/chains";
+import { botchainMainnet } from "@/lib/chains";
 import { defaultDaoAddress, factoryAbi, getFactoryAddress, pocketDaoAbi, Proposal } from "@/lib/contracts";
 import { formatBot, shortenAddress, timeLeft } from "@/lib/format";
 import { friendlyWalletError } from "@/lib/errors";
@@ -39,7 +39,7 @@ export function Dashboard() {
   const [pending, setPending] = useState(false);
   const [toast, setToast] = useState("");
   const currentTime = useSyncExternalStore(subscribeToClock, getClockSnapshot, getServerClockSnapshot);
-  const supportedChain = chainId === botchainTestnet.id || chainId === botchainMainnet.id;
+  const supportedChain = chainId === botchainMainnet.id;
   const factoryAddress = getFactoryAddress(chainId);
 
   const chooseDao = (value: Address) => {
@@ -129,7 +129,14 @@ export function Dashboard() {
     const initialMembers = membersInput.split(/[\s,]+/).filter(Boolean);
     if (!initialMembers.every((member) => isAddress(member))) return setToast("One or more member addresses are invalid.");
     if (!factoryAddress) return setToast("New DAO creation is not active on this network yet.");
-    const receipt = await transact(() => writeContractAsync({ address: factoryAddress, abi: factoryAbi, functionName: "createDAO", args: [String(form.get("name")), initialMembers as Address[], BigInt(Number(form.get("days")) * 86_400)] }), "Your PocketDAO is live and ready to fund.");
+    const initialDeposit = String(form.get("initialDeposit") || "").trim();
+    const receipt = await transact(() => writeContractAsync({
+      address: factoryAddress,
+      abi: factoryAbi,
+      functionName: "createDAO",
+      args: [String(form.get("name")), initialMembers as Address[], BigInt(Number(form.get("days")) * 86_400)],
+      ...(initialDeposit ? { value: parseEther(initialDeposit) } : {}),
+    }), initialDeposit ? "Your funded PocketDAO is live." : "Your PocketDAO is live and ready to fund.");
     if (receipt) {
       const events = parseEventLogs({ abi: factoryAbi, logs: receipt.logs, eventName: "DAOCreated", strict: false });
       const createdDao = events[0]?.args.dao;
@@ -154,11 +161,11 @@ export function Dashboard() {
 
   const voteOnProposal = (id: number, support: boolean) => selectedDao && transact(() => writeContractAsync({ address: selectedDao, abi: pocketDaoAbi, functionName: "vote", args: [BigInt(id), support] }), `Your ${support ? "YES" : "NO"} vote is recorded.`);
   const executeProposal = (id: number) => selectedDao && transact(() => writeContractAsync({ address: selectedDao, abi: pocketDaoAbi, functionName: "execute", args: [BigInt(id)] }), "Approved payment executed.");
-  const explorer = chainId === botchainMainnet.id ? botchainMainnet.blockExplorers.default.url : botchainTestnet.blockExplorers.default.url;
+  const explorer = botchainMainnet.blockExplorers.default.url;
 
   return <div className="dashboardPage">
     <DashboardHeader />
-    {!isConnected ? <DisconnectedState /> : !supportedChain ? <NetworkState onSwitch={() => switchChain({ chainId: botchainTestnet.id }, { onError: (error) => setToast(friendlyWalletError(error)) })} /> : (
+    {!isConnected ? <DisconnectedState /> : !supportedChain ? <NetworkState onSwitch={() => switchChain({ chainId: botchainMainnet.id }, { onError: (error) => setToast(friendlyWalletError(error)) })} /> : (
       <main className="dashboardMain">
         <div className="dashboardTitleRow">
           <div><span className="overline">COMMUNITY TREASURY</span><h1>{daoName || (overviewLoading ? "Loading treasury…" : "Choose your PocketDAO")}</h1><p>{selectedDao ? <>Treasury <button className="addressCopy" onClick={() => navigator.clipboard.writeText(selectedDao)}>{shortenAddress(selectedDao, 8)} <Copy size={13} /></button></> : "Create a treasury or open one with its contract address."}</p></div>
@@ -198,11 +205,11 @@ export function Dashboard() {
 }
 
 function DisconnectedState() {
-  return <main className="centerState"><span className="stateIcon"><Wallet /></span><span className="overline">POCKETDAO DASHBOARD</span><h1>Connect your group wallet.</h1><p>Connect to create a treasury, vote with your community, or check your group&apos;s proposals.</p><ConnectButton /><small>BOT Chain Testnet and Mainnet supported</small></main>;
+  return <main className="centerState"><span className="stateIcon"><Wallet /></span><span className="overline">POCKETDAO DASHBOARD</span><h1>Connect your group wallet.</h1><p>Connect to create a treasury, vote with your community, or check your group&apos;s proposals.</p><ConnectButton /><small>BOT Chain Mainnet</small></main>;
 }
 
 function NetworkState({ onSwitch }: { onSwitch: () => void }) {
-  return <main className="centerState"><span className="stateIcon"><ArrowUpRight /></span><span className="overline">WRONG NETWORK</span><h1>Switch to BOT Chain.</h1><p>PocketDAO runs on BOT Chain Testnet and Mainnet.</p><button className="button buttonPrimary buttonLarge" onClick={onSwitch}>Switch to BOT Chain Testnet</button></main>;
+  return <main className="centerState"><span className="stateIcon"><ArrowUpRight /></span><span className="overline">WRONG NETWORK</span><h1>Switch to BOT Chain.</h1><p>PocketDAO runs on BOT Chain Mainnet.</p><button className="button buttonPrimary buttonLarge" onClick={onSwitch}>Switch to BOT Chain Mainnet</button></main>;
 }
 
 function OpenDaoState({ manualDao, setManualDao, open, create, canCreate }: { manualDao: string; setManualDao: (value: string) => void; open: () => void; create: () => void; canCreate: boolean }) {
@@ -225,7 +232,7 @@ function ProposalItem({ id, proposal, currentTime, pending, explorer, canVote, h
 }
 
 function CreateDaoForm({ onSubmit, pending }: { onSubmit: (event: FormEvent<HTMLFormElement>) => void; pending: boolean }) {
-  return <form className="form" onSubmit={onSubmit}><label>DAO name<input name="name" required minLength={2} maxLength={64} placeholder="e.g. Builders Guild" /></label><label>Initial members <span>(optional)</span><textarea name="members" rows={3} placeholder="Paste wallet addresses, separated by commas" /></label><label>Voting period<select name="days" defaultValue="3"><option value="1">1 day</option><option value="3">3 days</option><option value="7">7 days</option><option value="14">14 days</option></select></label><div className="formNote"><Check size={15} />Your connected wallet is added as creator and first member.</div><TransactionButton pending={pending}>Create PocketDAO <ArrowUpRight size={17} /></TransactionButton></form>;
+  return <form className="form" onSubmit={onSubmit}><label>DAO name<input name="name" required minLength={2} maxLength={64} placeholder="e.g. Builders Guild" /></label><label>Initial members <span>(optional)</span><textarea name="members" rows={3} placeholder="Paste wallet addresses, separated by commas" /></label><label>Initial treasury deposit <span>(optional)</span><input name="initialDeposit" type="number" min="0.000001" step="any" placeholder="0.00" /><span className="inputSuffix">BOT</span></label><p className="formHelper">Funding during creation saves a separate deposit transaction and gas fee.</p><label>Voting period<select name="days" defaultValue="3"><option value="1">1 day</option><option value="3">3 days</option><option value="7">7 days</option><option value="14">14 days</option></select></label><div className="formNote"><Check size={15} />Your connected wallet is added as creator and first member.</div><TransactionButton pending={pending}>Create PocketDAO <ArrowUpRight size={17} /></TransactionButton></form>;
 }
 
 function ActionForm({ type, onSubmit, pending }: { type: Exclude<ModalName, "create" | null>; onSubmit: (event: FormEvent<HTMLFormElement>) => void; pending: boolean }) {
