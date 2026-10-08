@@ -22,7 +22,7 @@ jobs:
     env:
       RPC_URL: https://rpc.botchain.ai
       EXPLORER_URL: https://scan.botchain.ai
-      FACTORY_ADDRESS: 0xd7b385be0e22b41b6a838ec59b14caa95c44bb74
+      FACTORY_ADDRESS: "0xd7b385be0e22b41b6a838ec59b14caa95c44bb74"
       PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
     steps:
       - name: Confirm mainnet interaction
